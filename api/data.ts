@@ -21,12 +21,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const force = req.query.refresh === '1'
     const src = await readSheets(force)
-    if (src.demo) issues.push({ severity: 'info', code: 'DEMO', message: 'DEMO MODE: Google credentials not configured' })
     if (src.stale) issues.push({ severity: 'warn', code: 'STALE', message: 'Google Sheets unreachable; showing last good data' })
 
     let recs: Rec[] = src.tabs.flatMap(t => parseTab(t, src.values[t.tab] ?? [], issues))
     recs = validate(recs, issues)
-    if (!src.demo) recs = await persistAndMerge(recs, issues)
+    recs = await persistAndMerge(recs, issues)
 
     const snaps = [...new Set(recs.filter(r => r.level !== 'roll_reference').map(r => r.snapshot))].sort((a, b) => rank(a) - rank(b))
     const snapshot = (req.query.snapshot as string) || snaps[snaps.length - 1]
@@ -37,7 +36,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const ulb = req.query.ulb as string | undefined
     res.setHeader('Cache-Control', force || process.env.DASHBOARD_ACCESS_KEY ? 'private, no-store' : 's-maxage=60, stale-while-revalidate=120')
     res.json({
-      meta: { demo: src.demo, snapshot, snapshots: snaps, syncedAt: Date.now(), sourceUpdatedAt: src.modifiedTime ?? null, totalUlbs, reportingUlbs: agg.ulbs.length },
+      meta: { snapshot, snapshots: snaps, syncedAt: Date.now(), sourceUpdatedAt: src.modifiedTime ?? null, totalUlbs, reportingUlbs: agg.ulbs.length },
       state: agg.state, districts: agg.districts, ulbs: agg.ulbs, timeline: tl,
       wards: ulb ? agg.wards.filter(w => w.key.startsWith(ulb + '|')) : undefined,
       stations: ulb ? agg.stations.filter(s => s.key.startsWith(ulb + '|')) : undefined,
@@ -45,6 +44,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
   } catch (e: any) {
     console.error(e)
-    res.status(500).json({ error: 'Sync failed', detail: process.env.NODE_ENV === 'production' ? undefined : e.message })
+    const configurationError = e.message?.startsWith('Google Sheets configuration missing:')
+    res.status(configurationError ? 503 : 500).json({
+      error: configurationError ? e.message : 'Sync failed',
+      detail: process.env.NODE_ENV === 'production' || configurationError ? undefined : e.message,
+    })
   }
 }

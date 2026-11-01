@@ -51,7 +51,6 @@ export default function Command() {
 
   return <div className="dashboard-shell">
     <div className="ambient ambient-one" /><div className="ambient ambient-two" />
-    {meta.demo && <div className="demo-banner">DEMO MODE <span>Configure Google credentials to view live election data.</span></div>}
     <header className="topbar glass-panel">
       <a className="brand" href="#top" aria-label="AP Election Command Centre home"><span className="brand-seal">AP</span><span><b>AP Election</b><small>COMMAND CENTRE <i>2026</i></small></span></a>
       <div className="topbar-right">

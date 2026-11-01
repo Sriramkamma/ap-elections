@@ -9,7 +9,7 @@ npm i -g vercel
 vercel link && vercel env pull .env.local
 vercel dev        # Vite + /api together
 ```
-With no Google env vars it runs in labelled DEMO mode.
+Google Sheets credentials are required. Without them, the API returns a configuration error and does not show synthetic election data.
 
 ## Connect your sheet
 1. Enable Google Sheets API + Drive API; create a service account + JSON key.
