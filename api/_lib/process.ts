@@ -1,9 +1,9 @@
-import { DEFAULT_ALIASES, PCT_TOLERANCE, type Field, type Level, type TabConfig } from './config.js'
+import { DEFAULT_ALIASES, EXPECTED_ULB_COUNT, PCT_TOLERANCE, type Field, type Level, type TabConfig } from './config.js'
 
 export interface Rec {
   tab: string; level: Level; row: number; snapshot: string
   district: string; ulb: string; ward: string; psNo: string; psName: string
-  registered?: number; male?: number; female?: number; other?: number
+  registered?: number; wardCount?: number; male?: number; female?: number; other?: number
   polled?: number; sourcePct?: number; reportedAt?: number
 }
 export interface Issue { severity: 'error' | 'warn' | 'info'; code: string; message: string; tab?: string; row?: number }
@@ -11,7 +11,7 @@ export interface Node {
   key: string; name: string; district?: string; ulb?: string
   registered: number; polled: number; pct: number | null; remaining: number
   srcPct?: number; basis: string; lastReportedAt?: number; incomplete: number
-  male?: number; female?: number; other?: number
+  wardCount?: number; male?: number; female?: number; other?: number
 }
 
 const norm = (s: unknown) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
@@ -59,7 +59,7 @@ export function parseTab(cfg: TabConfig, values: any[][], issues: Issue[]): Rec[
       tab: cfg.tab, level: cfg.level, row: hr + k + 2,
       snapshot: cfg.snapshot ?? (s('snapshot') || 'UNLABELLED'),
       district: s('district'), ulb: s('ulb'), ward: s('ward'), psNo: s('psNo'), psName: s('psName'),
-      registered: num(g('registered')), male: num(g('male')), female: num(g('female')), other: num(g('other')),
+      registered: num(g('registered')), wardCount: num(g('wardCount')), male: num(g('male')), female: num(g('female')), other: num(g('other')),
       polled: num(g('polled')), sourcePct: num(g('sourcePct')), reportedAt: ts(g('reportedAt')),
     })
   })
@@ -80,7 +80,7 @@ export function validate(recs: Rec[], issues: Issue[]): Rec[] {
     const key = [r.tab, r.snapshot, k(r.district), k(r.ulb), k(r.ward), k(r.psNo || r.psName)].join('|')
     if (seen.has(key)) {
       issues.push({ severity: 'warn', code: 'DUPLICATE', tab: r.tab, row: r.row, message: `Duplicate record (${r.ulb} / ward ${r.ward} / PS ${r.psNo || r.psName}, ${r.snapshot}); first kept` })
-      continue
+      if (r.level !== 'ulb_summary') continue
     }
     seen.add(key); kept.push(r)
     if (r.level === 'roll_reference') continue
@@ -97,18 +97,51 @@ export function validate(recs: Rec[], issues: Issue[]): Rec[] {
   return kept
 }
 
+export function validateReportingTabs(bySnapshot: Record<string, Rec[]>, issues: Issue[]) {
+  const recordsOf = (rows: Rec[]) => rows.filter(r => r.level === 'ulb_summary')
+  const reference = new Set(recordsOf(bySnapshot['11 AM'] ?? []).map(r => norm(r.ulb)))
+  for (const [snapshot, rows] of Object.entries(bySnapshot)) {
+    const records = recordsOf(rows)
+    if (!records.length) continue
+    const seen = new Set<string>()
+    for (const r of records) {
+      const id = norm(r.ulb)
+      if (seen.has(id)) issues.push({ severity: 'error', code: 'DUPLICATE_ULB', tab: r.tab, row: r.row, message: `${snapshot}: duplicate ULB "${r.ulb}"` })
+      seen.add(id)
+      if (r.registered == null || r.polled == null || r.wardCount == null || r.sourcePct == null) issues.push({ severity: 'error', code: 'MISSING_REQUIRED_VALUE', tab: r.tab, row: r.row, message: `${snapshot}: ${r.ulb} is missing total voters, votes polled, ward count, or source polling percentage` })
+    }
+    if (records.length !== EXPECTED_ULB_COUNT) issues.push({ severity: 'error', code: 'ULB_COUNT', tab: snapshot, message: `${snapshot}: expected ${EXPECTED_ULB_COUNT} ULB records; found ${records.length}` })
+    if (snapshot !== '11 AM' && reference.size) {
+      const current = new Set(records.map(r => norm(r.ulb)))
+      for (const id of reference) if (!current.has(id)) issues.push({ severity: 'error', code: 'MISSING_ULB', tab: snapshot, message: `${snapshot}: ULB "${id}" is missing` })
+      for (const id of current) if (!reference.has(id)) issues.push({ severity: 'error', code: 'UNEXPECTED_ULB', tab: snapshot, message: `${snapshot}: ULB "${id}" was not present at 11 AM` })
+    }
+  }
+  const first = new Map<string, Rec>()
+  for (const snapshot of ['11 AM', '1 PM', '3 PM']) for (const r of recordsOf(bySnapshot[snapshot] ?? [])) {
+    const id = norm(r.ulb); const prev = first.get(id)
+    if (!prev) first.set(id, r)
+    else {
+      if (prev.registered != null && r.registered != null && prev.registered !== r.registered)
+        issues.push({ severity: 'error', code: 'VOTER_TOTAL_CHANGED', tab: snapshot, row: r.row, message: `${r.ulb}: total voters differ between ${prev.snapshot} (${prev.registered.toLocaleString('en-IN')}) and ${snapshot} (${r.registered.toLocaleString('en-IN')})` })
+      if (prev.wardCount != null && r.wardCount != null && prev.wardCount !== r.wardCount)
+        issues.push({ severity: 'error', code: 'WARD_COUNT_CHANGED', tab: snapshot, row: r.row, message: `${r.ulb}: ward count differs between ${prev.snapshot} (${prev.wardCount}) and ${snapshot} (${r.wardCount})` })
+    }
+  }
+}
+
 type Eff = Rec & { reg?: number; pol?: number }
 
 function mkNode(key: string, name: string, rows: Eff[], basis: string, extra: Partial<Node> = {}): Node {
   const ok = rows.filter(r => r.reg != null && r.pol != null)
   const registered = sum(ok.map(r => r.reg!)); const polled = sum(ok.map(r => r.pol!))
-  const g = (f: 'male' | 'female' | 'other') => { const v = rows.map(r => r[f]).filter((x): x is number => x != null); return v.length ? sum(v) : undefined }
+  const g = (f: 'male' | 'female' | 'other' | 'wardCount') => { const v = rows.map(r => r[f]).filter((x): x is number => x != null); return v.length ? sum(v) : undefined }
   return {
     key, name, registered, polled, remaining: registered - polled,
     pct: registered > 0 ? (polled / registered) * 100 : null,
     basis, incomplete: rows.length - ok.length,
     lastReportedAt: Math.max(0, ...rows.map(r => r.reportedAt ?? 0)) || undefined,
-    male: g('male'), female: g('female'), other: g('other'), ...extra,
+    wardCount: g('wardCount'), male: g('male'), female: g('female'), other: g('other'), ...extra,
   }
 }
 const group = <T,>(a: T[], f: (x: T) => string) => { const m = new Map<string, T[]>(); a.forEach(x => { const key = f(x); (m.get(key) ?? m.set(key, []).get(key)!).push(x) }); return m }

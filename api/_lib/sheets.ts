@@ -1,7 +1,7 @@
 import { google } from 'googleapis'
 import { TABS, type TabConfig } from './config.js'
 
-type Result = { tabs: TabConfig[]; values: Record<string, any[][]>; modifiedTime?: string; stale?: boolean; staleReason?: string }
+type Result = { tabs: TabConfig[]; values: Record<string, any[][]>; missingTabs: string[]; syncedAt: number; modifiedTime?: string; stale?: boolean; staleReason?: string }
 type ErrorWithStatus = Error & { statusCode: number; code: string }
 
 let mem: { at: number; v: Result } | null = null
@@ -92,7 +92,7 @@ export async function readSheets(force = false): Promise<Result> {
   }
 
   const ttl = (force ? 30 : Number(process.env.CACHE_TTL_SECONDS ?? 90)) * 1000
-  if (mem && Date.now() - mem.at < ttl) return mem.v
+  if (!force && mem && Date.now() - mem.at < ttl) return mem.v
 
   try {
     const auth = new google.auth.JWT({
@@ -110,31 +110,24 @@ export async function readSheets(force = false): Promise<Result> {
     })
     const availableTabs = (workbook.data.sheets ?? []).map(sheet => sheet.properties?.title).filter((title): title is string => Boolean(title))
     const missingTabs = TABS.map(tab => tab.tab).filter(tabName => !availableTabs.includes(tabName))
-    if (missingTabs.length) {
-      throw sheetsError(
-        `Configured worksheet tab(s) not found: ${missingTabs.join(', ')}. Available tabs: ${availableTabs.join(', ') || '(none)'}. Update TABS in api/_lib/config.ts to match the spreadsheet.`,
-        400,
-        'SHEETS_TAB_MISSING',
-      )
-    }
-
+    const existingTabs = TABS.filter(tab => availableTabs.includes(tab.tab))
     const [batch, driveMetadata] = await Promise.all([
-      sheets.spreadsheets.values.batchGet({
+      existingTabs.length ? sheets.spreadsheets.values.batchGet({
         spreadsheetId,
-        ranges: TABS.map(tab => `'${tab.tab.replace(/'/g, "''")}'`),
+        ranges: existingTabs.map(tab => `'${tab.tab.replace(/'/g, "''")}'`),
         valueRenderOption: 'UNFORMATTED_VALUE',
         dateTimeRenderOption: 'SERIAL_NUMBER',
-      }),
+      }) : Promise.resolve({ data: { valueRanges: [] } }),
       google.drive({ version: 'v3', auth }).files.get({ fileId: spreadsheetId, fields: 'modifiedTime' }).catch(() => null),
     ])
 
     const values: Record<string, any[][]> = {}
-    TABS.forEach((tab, index) => { values[tab.tab] = (batch.data.valueRanges?.[index]?.values as any[][]) ?? [] })
-    const result: Result = { tabs: TABS, values, modifiedTime: driveMetadata?.data.modifiedTime ?? undefined }
+    existingTabs.forEach((tab, index) => { values[tab.tab] = (batch.data.valueRanges?.[index]?.values as any[][]) ?? [] })
+    missingTabs.forEach(tab => { values[tab] = [] })
+    const result: Result = { tabs: TABS, values, missingTabs, syncedAt: Date.now(), modifiedTime: driveMetadata?.data.modifiedTime ?? undefined }
     mem = { at: Date.now(), v: result }
     return result
   } catch (error: any) {
-    if (error?.code === 'SHEETS_TAB_MISSING') throw error
     const syncError = googleRequestError(error)
     if (mem) return { ...mem.v, stale: true, staleReason: syncError.message }
     throw syncError

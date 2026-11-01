@@ -1,4 +1,4 @@
-export type Field = 'district'|'ulb'|'ward'|'psNo'|'psName'|'registered'|'male'|'female'|'other'|'polled'|'sourcePct'|'reportedAt'|'snapshot'
+export type Field = 'district'|'ulb'|'ward'|'wardCount'|'psNo'|'psName'|'registered'|'male'|'female'|'other'|'polled'|'sourcePct'|'reportedAt'|'snapshot'
 export type Level = 'polling_station'|'ward'|'ulb_summary'|'roll_reference'
 
 export interface TabConfig {
@@ -13,6 +13,7 @@ export interface TabConfig {
 export const DEFAULT_ALIASES: Record<Field, string[]> = {
   district: ['district', 'districtname'],
   ulb: ['ulb', 'ulbname', 'municipality', 'corporation', 'urbanlocalbody'],
+  wardCount: ['noofwards', 'wardcount', 'totalwards'],
   ward: ['ward', 'wardno', 'wardnumber', 'wardname'],
   psNo: ['psno', 'psnumber', 'pollingstationno', 'pollingstationnumber', 'boothno', 'boothnumber'],
   psName: ['psname', 'pollingstationname', 'boothname', 'pollingstation'],
@@ -26,9 +27,12 @@ export const DEFAULT_ALIASES: Record<Field, string[]> = {
   snapshot: ['slot', 'reportingslot', 'period', 'reportingperiod', 'snapshot'],
 }
 
-// The live workbook currently provides one ULB-level summary tab.
+// Each reporting slot is a separate ULB summary worksheet in the live workbook.
 export const TABS: TabConfig[] = [
-  { tab: 'Sheet1', level: 'ulb_summary', snapshot: '1 PM' },
+  { tab: '11 am', level: 'ulb_summary', snapshot: '11 AM' },
+  { tab: '1 pm', level: 'ulb_summary', snapshot: '1 PM' },
+  { tab: '3 pm', level: 'ulb_summary', snapshot: '3 PM' },
 ]
 
-export const PCT_TOLERANCE = 0.5 // percentage points before a reconciliation warning
+export const EXPECTED_ULB_COUNT = 92
+export const PCT_TOLERANCE = 0.011 // allow two-decimal source rounding only

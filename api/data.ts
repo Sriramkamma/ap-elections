@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { readSheets } from './_lib/sheets.js'
-import { parseTab, validate, aggregate, timeline, rank, type Issue, type Rec } from './_lib/process.js'
-import { persistAndMerge } from './_lib/store.js'
+import { parseTab, validate, validateReportingTabs, aggregate, timeline, type Issue, type Rec } from './_lib/process.js'
+import { EXPECTED_ULB_COUNT, TABS } from './_lib/config.js'
 
 function guard(req: VercelRequest, res: VercelResponse) {
   const origin = process.env.ALLOWED_ORIGIN
@@ -25,21 +25,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     let recs: Rec[] = src.tabs.flatMap(t => parseTab(t, src.values[t.tab] ?? [], issues))
     recs = validate(recs, issues)
-    recs = await persistAndMerge(recs, issues)
-
-    const snaps = [...new Set(recs.filter(r => r.level !== 'roll_reference').map(r => r.snapshot))].sort((a, b) => rank(a) - rank(b))
-    const snapshot = (req.query.snapshot as string) || snaps[snaps.length - 1]
-    const agg = aggregate(recs, snapshot, issues)
+    const bySnapshot: Record<string, Rec[]> = Object.fromEntries(TABS.map(tab => [tab.snapshot ?? tab.tab, recs.filter(r => r.snapshot === (tab.snapshot ?? tab.tab))]))
+    validateReportingTabs(bySnapshot, issues)
+    const reports = TABS.map(tab => {
+      const snapshot = tab.snapshot ?? tab.tab
+      const rows = bySnapshot[snapshot] ?? []
+      const ulbs = rows.filter(r => r.level === 'ulb_summary')
+      const reportIssues = issues.filter(issue => issue.tab === tab.tab || issue.tab === snapshot)
+      const available = !src.missingTabs.includes(tab.tab) && ulbs.length > 0
+      const valid = available && ulbs.length === EXPECTED_ULB_COUNT && !reportIssues.some(issue => issue.severity === 'error')
+      const agg = aggregate(recs, snapshot, [])
+      return { snapshot, available, reason: src.missingTabs.includes(tab.tab) ? 'Worksheet tab not found in the spreadsheet.' : !ulbs.length ? 'Worksheet has no ULB records.' : undefined, valid, recordCount: ulbs.length, totalWards: ulbs.every(r => r.wardCount != null) ? ulbs.reduce((sum, row) => sum + (row.wardCount ?? 0), 0) : null, state: agg.state, districts: agg.districts, ulbs: agg.ulbs, issues: reportIssues }
+    })
+    const snaps = TABS.map(tab => tab.snapshot ?? tab.tab)
+    const snapshot = snaps.includes(req.query.snapshot as string) ? req.query.snapshot as string : '3 PM'
+    const agg = reports.find(report => report.snapshot === snapshot)!
+    const selectedAggregate = aggregate(recs, snapshot, [])
     const tl = timeline(recs, issues)
-    const totalUlbs = new Set(recs.map(r => r.ulb.toLowerCase().replace(/[^a-z0-9]/g, ''))).size
+    const totalUlbs = EXPECTED_ULB_COUNT
 
     const ulb = req.query.ulb as string | undefined
     res.setHeader('Cache-Control', force || process.env.DASHBOARD_ACCESS_KEY ? 'private, no-store' : 's-maxage=60, stale-while-revalidate=120')
     res.json({
-      meta: { snapshot, snapshots: snaps, syncedAt: Date.now(), sourceUpdatedAt: src.modifiedTime ?? null, totalUlbs, reportingUlbs: agg.ulbs.length },
-      state: agg.state, districts: agg.districts, ulbs: agg.ulbs, timeline: tl,
-      wards: ulb ? agg.wards.filter(w => w.key.startsWith(ulb + '|')) : undefined,
-      stations: ulb ? agg.stations.filter(s => s.key.startsWith(ulb + '|')) : undefined,
+      meta: { snapshot, snapshots: snaps, syncedAt: src.syncedAt, sourceUpdatedAt: src.modifiedTime ?? null, totalUlbs, reportingUlbs: agg.recordCount },
+      reports, state: agg.state, districts: agg.districts, ulbs: agg.ulbs, timeline: tl,
+      wards: ulb ? selectedAggregate.wards.filter(w => w.key.startsWith(ulb + '|')) : undefined,
+      stations: ulb ? selectedAggregate.stations.filter(s => s.key.startsWith(ulb + '|')) : undefined,
       issues: issues.slice(0, 500), issueCount: issues.length,
     })
   } catch (e: any) {
