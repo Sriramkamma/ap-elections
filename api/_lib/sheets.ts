@@ -17,7 +17,19 @@ function requiredEnv(name: string): string {
 }
 
 function normalizeGooglePrivateKey(key: string): string {
-  return key
+  let normalized = key.trim()
+  if (normalized.startsWith('"') && normalized.endsWith('"')) {
+    try {
+      const parsed: unknown = JSON.parse(normalized)
+      normalized = typeof parsed === 'string' ? parsed : normalized.slice(1, -1)
+    } catch {
+      normalized = normalized.slice(1, -1)
+    }
+  } else if (normalized.startsWith("'") && normalized.endsWith("'")) {
+    normalized = normalized.slice(1, -1)
+  }
+
+  return normalized
     .replace(/\\r\\n/g, '\n')
     .replace(/\\n/g, '\n')
     .replace(/\r\n?/g, '\n')
@@ -43,6 +55,9 @@ function googleRequestError(error: any): ErrorWithStatus {
   const message = String(error?.response?.data?.error?.message ?? error?.message ?? '').toLowerCase()
   const detail = safeErrorDetail(error)
 
+  if (message.includes('decoder routines') || message.includes('unsupported')) {
+    return sheetsError('GOOGLE_PRIVATE_KEY could not be decoded. Use the private_key value only; surrounding quotes and escaped or real newlines are supported, but the PEM content must be complete.', 503, 'SHEETS_KEY_FORMAT')
+  }
   if (status === 401 || message.includes('invalid_grant') || message.includes('invalid jwt')) {
     return sheetsError('Google service account authentication failed. Check GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_PRIVATE_KEY, and confirm the key is active.', 502, 'SHEETS_AUTH')
   }
@@ -72,8 +87,8 @@ export async function readSheets(force = false): Promise<Result> {
   const keyRaw = requiredEnv('GOOGLE_PRIVATE_KEY')
   const spreadsheetId = requiredEnv('GOOGLE_SHEETS_SPREADSHEET_ID')
   const privateKey = normalizeGooglePrivateKey(keyRaw)
-  if (!privateKey.includes('-----BEGIN PRIVATE KEY-----') || !privateKey.includes('-----END PRIVATE KEY-----')) {
-    throw sheetsError('GOOGLE_PRIVATE_KEY is not a valid PEM private key. Use the private_key value from the service account JSON file.', 503, 'SHEETS_KEY_INVALID')
+  if (!/^-----BEGIN PRIVATE KEY-----\n[\s\S]+\n-----END PRIVATE KEY-----$/.test(privateKey)) {
+    throw sheetsError('GOOGLE_PRIVATE_KEY is not a valid PEM private key. Use only the private_key value from the service account JSON file, with the complete BEGIN and END lines.', 503, 'SHEETS_KEY_INVALID')
   }
 
   const ttl = (force ? 30 : Number(process.env.CACHE_TTL_SECONDS ?? 90)) * 1000
