@@ -1,19 +1,63 @@
 import { google } from 'googleapis'
 import { TABS, type TabConfig } from './config.js'
 
-type Result = { tabs: TabConfig[]; values: Record<string, any[][]>; modifiedTime?: string; stale?: boolean }
+type Result = { tabs: TabConfig[]; values: Record<string, any[][]>; modifiedTime?: string; stale?: boolean; staleReason?: string }
+type ErrorWithStatus = Error & { statusCode: number; code: string }
+
 let mem: { at: number; v: Result } | null = null
 
+function sheetsError(message: string, statusCode: number, code: string): ErrorWithStatus {
+  return Object.assign(new Error(message), { statusCode, code })
+}
+
+function requiredEnv(name: string): string {
+  const value = process.env[name]?.trim()
+  if (!value) throw sheetsError(`Google Sheets configuration missing: ${name}`, 503, 'SHEETS_CONFIG')
+  return value
+}
+
+function normalizeGooglePrivateKey(key: string): string {
+  return key
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n?/g, '\n')
+    .trim()
+}
+
+function googleRequestError(error: any): ErrorWithStatus {
+  const status = Number(error?.response?.status ?? error?.code)
+  const reason = String(error?.response?.data?.error?.status ?? error?.errors?.[0]?.reason ?? '').toLowerCase()
+  const message = String(error?.response?.data?.error?.message ?? error?.message ?? '').toLowerCase()
+
+  if (status === 401 || message.includes('invalid_grant') || message.includes('invalid jwt')) {
+    return sheetsError('Google service account authentication failed. Check GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_PRIVATE_KEY, and confirm the key is active.', 502, 'SHEETS_AUTH')
+  }
+  if (reason === 'service_disabled' || message.includes('api has not been used') || message.includes('api is disabled')) {
+    return sheetsError('Google Sheets API is disabled for the service account project. Enable the Google Sheets API in Google Cloud Console.', 502, 'SHEETS_API_DISABLED')
+  }
+  if (status === 403) {
+    return sheetsError('Google Sheets access was denied. Enable the Google Sheets API and share the spreadsheet with the service account as a Viewer.', 403, 'SHEETS_ACCESS_DENIED')
+  }
+  if (status === 404) {
+    return sheetsError('Google spreadsheet not found or not accessible. Verify GOOGLE_SHEETS_SPREADSHEET_ID and the sheet sharing permissions.', 404, 'SHEETS_SPREADSHEET_NOT_FOUND')
+  }
+  if (status === 429) {
+    return sheetsError('Google Sheets rate limit reached. Wait briefly and refresh the dashboard.', 429, 'SHEETS_RATE_LIMIT')
+  }
+  if (status >= 500 || ['econnreset', 'enotfound', 'etimedout'].includes(String(error?.code ?? '').toLowerCase())) {
+    return sheetsError('Google Sheets could not be reached. Check connectivity and try again.', 502, 'SHEETS_UNAVAILABLE')
+  }
+  return sheetsError('Google Sheets synchronization failed. Verify the service account, spreadsheet ID, API access, and configured worksheet tabs.', 502, 'SHEETS_SYNC')
+}
+
 export async function readSheets(force = false): Promise<Result> {
-  const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL
-  const keyRaw = process.env.GOOGLE_PRIVATE_KEY
-  const id = process.env.GOOGLE_SHEETS_SPREADSHEET_ID
-  const missing = [
-    !email && 'GOOGLE_SERVICE_ACCOUNT_EMAIL',
-    !keyRaw && 'GOOGLE_PRIVATE_KEY',
-    !id && 'GOOGLE_SHEETS_SPREADSHEET_ID',
-  ].filter(Boolean)
-  if (missing.length) throw new Error(`Google Sheets configuration missing: ${missing.join(', ')}`)
+  const email = requiredEnv('GOOGLE_SERVICE_ACCOUNT_EMAIL')
+  const keyRaw = requiredEnv('GOOGLE_PRIVATE_KEY')
+  const spreadsheetId = requiredEnv('GOOGLE_SHEETS_SPREADSHEET_ID')
+  const privateKey = normalizeGooglePrivateKey(keyRaw)
+  if (!privateKey.includes('-----BEGIN PRIVATE KEY-----') || !privateKey.includes('-----END PRIVATE KEY-----')) {
+    throw sheetsError('GOOGLE_PRIVATE_KEY is not a valid PEM private key. Use the private_key value from the service account JSON file.', 503, 'SHEETS_KEY_INVALID')
+  }
 
   const ttl = (force ? 30 : Number(process.env.CACHE_TTL_SECONDS ?? 90)) * 1000
   if (mem && Date.now() - mem.at < ttl) return mem.v
@@ -21,28 +65,46 @@ export async function readSheets(force = false): Promise<Result> {
   try {
     const auth = new google.auth.JWT({
       email,
-      key: keyRaw.replace(/\\n/g, '\n'),
+      key: privateKey,
       scopes: [
         'https://www.googleapis.com/auth/spreadsheets.readonly',
         'https://www.googleapis.com/auth/drive.metadata.readonly',
       ],
     })
-    const [bg, meta] = await Promise.all([
-      google.sheets({ version: 'v4', auth }).spreadsheets.values.batchGet({
-        spreadsheetId: id,
-        ranges: TABS.map(t => `'${t.tab.replace(/'/g, "''")}'`),
+    const sheets = google.sheets({ version: 'v4', auth })
+    const workbook = await sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: 'properties(title),sheets(properties(title))',
+    })
+    const availableTabs = (workbook.data.sheets ?? []).map(sheet => sheet.properties?.title).filter((title): title is string => Boolean(title))
+    const missingTabs = TABS.map(tab => tab.tab).filter(tabName => !availableTabs.includes(tabName))
+    if (missingTabs.length) {
+      throw sheetsError(
+        `Configured worksheet tab(s) not found: ${missingTabs.join(', ')}. Available tabs: ${availableTabs.join(', ') || '(none)'}. Update TABS in api/_lib/config.ts to match the spreadsheet.`,
+        400,
+        'SHEETS_TAB_MISSING',
+      )
+    }
+
+    const [batch, driveMetadata] = await Promise.all([
+      sheets.spreadsheets.values.batchGet({
+        spreadsheetId,
+        ranges: TABS.map(tab => `'${tab.tab.replace(/'/g, "''")}'`),
         valueRenderOption: 'UNFORMATTED_VALUE',
         dateTimeRenderOption: 'SERIAL_NUMBER',
       }),
-      google.drive({ version: 'v3', auth }).files.get({ fileId: id, fields: 'modifiedTime' }).catch(() => null),
+      google.drive({ version: 'v3', auth }).files.get({ fileId: spreadsheetId, fields: 'modifiedTime' }).catch(() => null),
     ])
+
     const values: Record<string, any[][]> = {}
-    TABS.forEach((t, i) => { values[t.tab] = (bg.data.valueRanges?.[i]?.values as any[][]) ?? [] })
-    const v: Result = { tabs: TABS, values, modifiedTime: meta?.data.modifiedTime ?? undefined }
-    mem = { at: Date.now(), v }
-    return v
-  } catch (e) {
-    if (mem) return { ...mem.v, stale: true }
-    throw e
+    TABS.forEach((tab, index) => { values[tab.tab] = (batch.data.valueRanges?.[index]?.values as any[][]) ?? [] })
+    const result: Result = { tabs: TABS, values, modifiedTime: driveMetadata?.data.modifiedTime ?? undefined }
+    mem = { at: Date.now(), v: result }
+    return result
+  } catch (error: any) {
+    if (error?.code === 'SHEETS_TAB_MISSING') throw error
+    const syncError = googleRequestError(error)
+    if (mem) return { ...mem.v, stale: true, staleReason: syncError.message }
+    throw syncError
   }
 }

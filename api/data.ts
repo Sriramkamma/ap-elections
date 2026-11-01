@@ -21,7 +21,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const force = req.query.refresh === '1'
     const src = await readSheets(force)
-    if (src.stale) issues.push({ severity: 'warn', code: 'STALE', message: 'Google Sheets unreachable; showing last good data' })
+    if (src.stale) issues.push({ severity: 'warn', code: 'STALE', message: src.staleReason ?? 'Google Sheets sync failed; showing the last successfully fetched real data.' })
 
     let recs: Rec[] = src.tabs.flatMap(t => parseTab(t, src.values[t.tab] ?? [], issues))
     recs = validate(recs, issues)
@@ -44,10 +44,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
   } catch (e: any) {
     console.error(e)
-    const configurationError = e.message?.startsWith('Google Sheets configuration missing:')
-    res.status(configurationError ? 503 : 500).json({
-      error: configurationError ? e.message : 'Sync failed',
-      detail: process.env.NODE_ENV === 'production' || configurationError ? undefined : e.message,
-    })
+    const statusCode = Number.isInteger(e?.statusCode) && e.statusCode >= 400 && e.statusCode <= 599 ? e.statusCode : 500
+    const message = typeof e?.message === 'string' && e.message ? e.message : 'Unexpected data synchronization error.'
+    res.status(statusCode).json({ error: message })
   }
 }

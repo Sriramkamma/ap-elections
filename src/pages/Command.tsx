@@ -25,6 +25,7 @@ export default function Command() {
   if (!data) return <div className="loading-screen"><div className="loading-mark"><Activity /></div><p>{error ? `Unable to load dashboard: ${error}` : 'Connecting to live election data…'}</p></div>
 
   const { state, districts, ulbs, timeline, meta, issueCount } = data
+  const syncIssue = data.issues?.find((issue: any) => issue.code === 'STALE')
   const directory = [
     ...districts.map((d: any) => ({ ...d, type: 'District', district: d.name })),
     ...ulbs.map((u: any) => ({ ...u, type: 'ULB', district: u.district || '' })),
@@ -66,7 +67,7 @@ export default function Command() {
         <div className="snapshot-pill"><span className="snapshot-dot" /><span><small>REPORTING SNAPSHOT</small><b>{meta.snapshot}</b></span><span className="snapshot-divider" /><span><small>ULBs REPORTING</small><b>{meta.reportingUlbs}<em> / {meta.totalUlbs}</em></b></span></div>
       </section>
 
-      {issueCount > 0 && <div className="quality-alert"><AlertTriangle size={17} /><span><b>{issueCount} data quality {issueCount === 1 ? 'notice' : 'notices'}</b><small>{state.incomplete} row(s) excluded for missing voter or polling totals.</small></span></div>}
+      {issueCount > 0 && <div className="quality-alert"><AlertTriangle size={17} /><span><b>{issueCount} data quality {issueCount === 1 ? 'notice' : 'notices'}</b><small>{syncIssue?.message ?? `${state.incomplete} row(s) excluded for missing voter or polling totals.`}</small></span></div>}
 
       <section className="metrics-grid">
         <Metric label="Polling percentage" value={p(state.pct)} note="Statewide turnout" icon={Activity} tone="icon-teal" />

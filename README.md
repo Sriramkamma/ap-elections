@@ -15,7 +15,7 @@ Google Sheets credentials are required. Without them, the API returns a configur
 1. Enable Google Sheets API + Drive API; create a service account + JSON key.
 2. Share the sheet with the service account email (Viewer).
 3. Edit `api/_lib/config.ts` (tab names, level, optional header overrides).
-4. Set env vars in Vercel (see `.env.example`). `GOOGLE_PRIVATE_KEY` keeps literal `\n`.
+4. Set the Google service account email, private key, and spreadsheet ID in Vercel (see `.env.example`). `GOOGLE_PRIVATE_KEY` accepts actual line breaks or escaped `\n` sequences.
 5. Add Upstash Redis via Vercel Marketplace (sets the UPSTASH_* vars).
 6. `vercel --prod`
 
