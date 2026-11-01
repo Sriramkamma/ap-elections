@@ -24,10 +24,24 @@ function normalizeGooglePrivateKey(key: string): string {
     .trim()
 }
 
+function safeErrorDetail(error: any): string {
+  const detail = String(
+    error?.response?.data?.error?.message ??
+    error?.errors?.[0]?.message ??
+    error?.message ??
+    '',
+  )
+    .replace(/-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----/gi, '[redacted private key]')
+    .replace(/private_key\s*[:=]\s*[^\s,;]+/gi, 'private_key=[redacted]')
+    .trim()
+  return detail.slice(0, 320)
+}
+
 function googleRequestError(error: any): ErrorWithStatus {
   const status = Number(error?.response?.status ?? error?.code)
   const reason = String(error?.response?.data?.error?.status ?? error?.errors?.[0]?.reason ?? '').toLowerCase()
   const message = String(error?.response?.data?.error?.message ?? error?.message ?? '').toLowerCase()
+  const detail = safeErrorDetail(error)
 
   if (status === 401 || message.includes('invalid_grant') || message.includes('invalid jwt')) {
     return sheetsError('Google service account authentication failed. Check GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_PRIVATE_KEY, and confirm the key is active.', 502, 'SHEETS_AUTH')
@@ -44,10 +58,13 @@ function googleRequestError(error: any): ErrorWithStatus {
   if (status === 429) {
     return sheetsError('Google Sheets rate limit reached. Wait briefly and refresh the dashboard.', 429, 'SHEETS_RATE_LIMIT')
   }
+  if (status === 400) {
+    return sheetsError(`Google Sheets rejected the request (400): ${detail || 'Check the spreadsheet ID, worksheet range, and API request.'}`, 502, 'SHEETS_BAD_REQUEST')
+  }
   if (status >= 500 || ['econnreset', 'enotfound', 'etimedout'].includes(String(error?.code ?? '').toLowerCase())) {
     return sheetsError('Google Sheets could not be reached. Check connectivity and try again.', 502, 'SHEETS_UNAVAILABLE')
   }
-  return sheetsError('Google Sheets synchronization failed. Verify the service account, spreadsheet ID, API access, and configured worksheet tabs.', 502, 'SHEETS_SYNC')
+  return sheetsError(`Google Sheets synchronization failed${status ? ` (HTTP ${status})` : ''}: ${detail || 'Verify the service account, spreadsheet ID, API access, and configured worksheet tabs.'}`, 502, 'SHEETS_SYNC')
 }
 
 export async function readSheets(force = false): Promise<Result> {
