@@ -32,6 +32,7 @@ export const TABS: TabConfig[] = [
   { tab: '11 am', level: 'ulb_summary', snapshot: '11 AM' },
   { tab: '1 pm', level: 'ulb_summary', snapshot: '1 PM' },
   { tab: '3 pm', level: 'ulb_summary', snapshot: '3 PM' },
+  { tab: '5 pm', level: 'ulb_summary', snapshot: '5 PM' },
 ]
 
 export const EXPECTED_ULB_COUNT = 92

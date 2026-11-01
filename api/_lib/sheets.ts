@@ -109,12 +109,15 @@ export async function readSheets(force = false): Promise<Result> {
       fields: 'properties(title),sheets(properties(title))',
     })
     const availableTabs = (workbook.data.sheets ?? []).map(sheet => sheet.properties?.title).filter((title): title is string => Boolean(title))
-    const missingTabs = TABS.map(tab => tab.tab).filter(tabName => !availableTabs.includes(tabName))
-    const existingTabs = TABS.filter(tab => availableTabs.includes(tab.tab))
+    const normalizeTabName = (title: string) => title.toLocaleLowerCase().replace(/[^a-z0-9]/g, '')
+    const actualTabByName = new Map(availableTabs.map(title => [normalizeTabName(title), title]))
+    const actualTab = (tabName: string) => actualTabByName.get(normalizeTabName(tabName))
+    const missingTabs = TABS.map(tab => tab.tab).filter(tabName => !actualTab(tabName))
+    const existingTabs = TABS.filter(tab => actualTab(tab.tab))
     const [batch, driveMetadata] = await Promise.all([
       existingTabs.length ? sheets.spreadsheets.values.batchGet({
         spreadsheetId,
-        ranges: existingTabs.map(tab => `'${tab.tab.replace(/'/g, "''")}'`),
+        ranges: existingTabs.map(tab => `'${actualTab(tab.tab)!.replace(/'/g, "''")}'`),
         valueRenderOption: 'UNFORMATTED_VALUE',
         dateTimeRenderOption: 'SERIAL_NUMBER',
       }) : Promise.resolve({ data: { valueRanges: [] } }),

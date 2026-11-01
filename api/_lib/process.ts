@@ -35,6 +35,7 @@ export const rank = (l: string) => {
 }
 
 export function parseTab(cfg: TabConfig, values: any[][], issues: Issue[]): Rec[] {
+  if (!values.length) return []
   const hr = (cfg.headerRow ?? 1) - 1
   const header = (values[hr] ?? []).map(norm)
   const idx: Partial<Record<Field, number>> = {}
@@ -99,7 +100,8 @@ export function validate(recs: Rec[], issues: Issue[]): Rec[] {
 
 export function validateReportingTabs(bySnapshot: Record<string, Rec[]>, issues: Issue[]) {
   const recordsOf = (rows: Rec[]) => rows.filter(r => r.level === 'ulb_summary')
-  const reference = new Set(recordsOf(bySnapshot['11 AM'] ?? []).map(r => norm(r.ulb)))
+  const reportingTimes = ['11 AM', '1 PM', '3 PM', '5 PM']
+  const reference = new Set(recordsOf(bySnapshot[reportingTimes[0]] ?? []).map(r => norm(r.ulb)))
   for (const [snapshot, rows] of Object.entries(bySnapshot)) {
     const records = recordsOf(rows)
     if (!records.length) continue
@@ -110,15 +112,15 @@ export function validateReportingTabs(bySnapshot: Record<string, Rec[]>, issues:
       seen.add(id)
       if (r.registered == null || r.polled == null || r.wardCount == null || r.sourcePct == null) issues.push({ severity: 'error', code: 'MISSING_REQUIRED_VALUE', tab: r.tab, row: r.row, message: `${snapshot}: ${r.ulb} is missing total voters, votes polled, ward count, or source polling percentage` })
     }
-    if (records.length !== EXPECTED_ULB_COUNT) issues.push({ severity: 'error', code: 'ULB_COUNT', tab: snapshot, message: `${snapshot}: expected ${EXPECTED_ULB_COUNT} ULB records; found ${records.length}` })
+    if (records.length !== EXPECTED_ULB_COUNT) issues.push({ severity: snapshot === '5 PM' && records.length < EXPECTED_ULB_COUNT ? 'warn' : 'error', code: 'ULB_COUNT', tab: snapshot, message: `${snapshot}: expected ${EXPECTED_ULB_COUNT} ULB records; found ${records.length}` })
     if (snapshot !== '11 AM' && reference.size) {
       const current = new Set(records.map(r => norm(r.ulb)))
-      for (const id of reference) if (!current.has(id)) issues.push({ severity: 'error', code: 'MISSING_ULB', tab: snapshot, message: `${snapshot}: ULB "${id}" is missing` })
+      for (const id of reference) if (!current.has(id)) issues.push({ severity: snapshot === '5 PM' ? 'warn' : 'error', code: 'MISSING_ULB', tab: snapshot, message: `${snapshot}: ULB "${id}" is missing` })
       for (const id of current) if (!reference.has(id)) issues.push({ severity: 'error', code: 'UNEXPECTED_ULB', tab: snapshot, message: `${snapshot}: ULB "${id}" was not present at 11 AM` })
     }
   }
   const first = new Map<string, Rec>()
-  for (const snapshot of ['11 AM', '1 PM', '3 PM']) for (const r of recordsOf(bySnapshot[snapshot] ?? [])) {
+  for (const snapshot of reportingTimes) for (const r of recordsOf(bySnapshot[snapshot] ?? [])) {
     const id = norm(r.ulb); const prev = first.get(id)
     if (!prev) first.set(id, r)
     else {
