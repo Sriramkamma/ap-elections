@@ -5,6 +5,7 @@ export interface Rec {
   district: string; ulb: string; ward: string; psNo: string; psName: string
   registered?: number; wardCount?: number; male?: number; female?: number; other?: number
   polled?: number; sourcePct?: number; reportedAt?: number
+  isGrandTotal?: boolean
 }
 export interface Issue { severity: 'error' | 'warn' | 'info'; code: string; message: string; tab?: string; row?: number }
 export interface Node {
@@ -56,6 +57,24 @@ export function parseTab(cfg: TabConfig, values: any[][], issues: Issue[]): Rec[
     if (!r || r.every(c => c === '' || c == null)) return
     const g = (f: Field) => (idx[f] == null ? undefined : r[idx[f]!])
     const s = (f: Field) => String(g(f) ?? '').trim()
+    const rowNo = hr + k + 2
+    if (r.some(cell => norm(cell) === 'grandtotal')) {
+      out.push({
+        tab: cfg.tab, level: cfg.level, row: rowNo,
+        snapshot: cfg.snapshot ?? (s('snapshot') || 'UNLABELLED'),
+        district: '', ulb: '', ward: '', psNo: '', psName: '',
+        registered: num(g('registered')), wardCount: num(g('wardCount')), male: num(g('male')), female: num(g('female')), other: num(g('other')),
+        polled: num(g('polled')), sourcePct: num(g('sourcePct')), isGrandTotal: true,
+      })
+      return
+    }
+    // A populated worksheet row without a ULB is malformed, not a ULB record.
+    // Keep it visible as a validation error while excluding it from record counts
+    // and cross-time identity comparisons.
+    if (!s('ulb')) {
+      issues.push({ severity: 'error', code: 'MISSING_ULB_NAME', tab: cfg.tab, row: rowNo, message: `${cfg.snapshot ?? cfg.tab}: ULB name is missing (row ${rowNo})` })
+      return
+    }
     out.push({
       tab: cfg.tab, level: cfg.level, row: hr + k + 2,
       snapshot: cfg.snapshot ?? (s('snapshot') || 'UNLABELLED'),
@@ -84,6 +103,7 @@ export function validate(recs: Rec[], issues: Issue[]): Rec[] {
       if (r.level !== 'ulb_summary') continue
     }
     seen.add(key); kept.push(r)
+    if (r.isGrandTotal) continue
     if (r.level === 'roll_reference') continue
     const at = { tab: r.tab, row: r.row }
     if (refUlbs.size && !refUlbs.has(k(r.ulb))) issues.push({ severity: 'warn', code: 'UNKNOWN_ULB', ...at, message: `ULB "${r.ulb}" not in reference list` })
@@ -99,29 +119,45 @@ export function validate(recs: Rec[], issues: Issue[]): Rec[] {
 }
 
 export function validateReportingTabs(bySnapshot: Record<string, Rec[]>, issues: Issue[]) {
-  const recordsOf = (rows: Rec[]) => rows.filter(r => r.level === 'ulb_summary')
+  const recordsOf = (rows: Rec[]) => rows.filter(r => r.level === 'ulb_summary' && !r.isGrandTotal)
   const reportingTimes = ['11 AM', '1 PM', '3 PM', '5 PM']
-  const reference = new Set(recordsOf(bySnapshot[reportingTimes[0]] ?? []).map(r => norm(r.ulb)))
+  const reference = new Set(recordsOf(bySnapshot[reportingTimes[0]] ?? []).map(r => norm(r.ulb)).filter(Boolean))
   for (const [snapshot, rows] of Object.entries(bySnapshot)) {
     const records = recordsOf(rows)
+    const sourceTotal = rows.find(r => r.level === 'ulb_summary' && r.isGrandTotal)
+    if (sourceTotal) {
+      const total = (field: 'registered' | 'polled' | 'wardCount') => records.every(r => r[field] != null)
+        ? sum(records.map(r => r[field]!)) : undefined
+      for (const [field, label] of [['registered', 'total voters'], ['polled', 'votes polled'], ['wardCount', 'ward count']] as const) {
+        const calculated = total(field)
+        const source = sourceTotal[field]
+        if (calculated != null && source != null && calculated !== source)
+          issues.push({ severity: 'error', code: 'GRAND_TOTAL_MISMATCH', tab: sourceTotal.tab, row: sourceTotal.row, message: `${snapshot}: source grand total ${label} (${source.toLocaleString('en-IN')}) differs from ULB sum (${calculated.toLocaleString('en-IN')})` })
+      }
+      const calculatedPct = total('registered') && total('polled') != null ? total('polled')! / total('registered')! * 100 : undefined
+      if (calculatedPct != null && sourceTotal.sourcePct != null && Math.abs(calculatedPct - sourceTotal.sourcePct) > PCT_TOLERANCE)
+        issues.push({ severity: 'error', code: 'GRAND_TOTAL_PCT_MISMATCH', tab: sourceTotal.tab, row: sourceTotal.row, message: `${snapshot}: source grand total percentage (${sourceTotal.sourcePct.toFixed(2)}%) differs from calculated ${calculatedPct.toFixed(2)}%` })
+    }
     if (!records.length) continue
     const seen = new Set<string>()
     for (const r of records) {
       const id = norm(r.ulb)
+      if (!id) continue
       if (seen.has(id)) issues.push({ severity: 'error', code: 'DUPLICATE_ULB', tab: r.tab, row: r.row, message: `${snapshot}: duplicate ULB "${r.ulb}"` })
       seen.add(id)
       if (r.registered == null || r.polled == null || r.wardCount == null || r.sourcePct == null) issues.push({ severity: 'error', code: 'MISSING_REQUIRED_VALUE', tab: r.tab, row: r.row, message: `${snapshot}: ${r.ulb} is missing total voters, votes polled, ward count, or source polling percentage` })
     }
     if (records.length !== EXPECTED_ULB_COUNT) issues.push({ severity: snapshot === '5 PM' && records.length < EXPECTED_ULB_COUNT ? 'warn' : 'error', code: 'ULB_COUNT', tab: snapshot, message: `${snapshot}: expected ${EXPECTED_ULB_COUNT} ULB records; found ${records.length}` })
     if (snapshot !== '11 AM' && reference.size) {
-      const current = new Set(records.map(r => norm(r.ulb)))
+      const current = new Set(records.map(r => norm(r.ulb)).filter(Boolean))
       for (const id of reference) if (!current.has(id)) issues.push({ severity: snapshot === '5 PM' ? 'warn' : 'error', code: 'MISSING_ULB', tab: snapshot, message: `${snapshot}: ULB "${id}" is missing` })
       for (const id of current) if (!reference.has(id)) issues.push({ severity: 'error', code: 'UNEXPECTED_ULB', tab: snapshot, message: `${snapshot}: ULB "${id}" was not present at 11 AM` })
     }
   }
   const first = new Map<string, Rec>()
   for (const snapshot of reportingTimes) for (const r of recordsOf(bySnapshot[snapshot] ?? [])) {
-    const id = norm(r.ulb); const prev = first.get(id)
+    const id = norm(r.ulb); if (!id) continue
+    const prev = first.get(id)
     if (!prev) first.set(id, r)
     else {
       if (prev.registered != null && r.registered != null && prev.registered !== r.registered)
@@ -166,7 +202,7 @@ export function aggregate(all: Rec[], snapshot: string, issues: Issue[]) {
     const g = rIdx.get(`${k(r.ulb)}|${k(r.ward)}|${k(r.psNo)}`)
     return { ...r, reg, pol, male: r.male ?? g?.male, female: r.female ?? g?.female, other: r.other ?? g?.other }
   }
-  const rows = all.filter(r => r.snapshot === snapshot && r.level !== 'roll_reference').map(eff)
+  const rows = all.filter(r => r.snapshot === snapshot && r.level !== 'roll_reference' && !r.isGrandTotal).map(eff)
   const ulbs: Node[] = []; const wards: Node[] = []; const stations: Node[] = []
 
   for (const [ukey, urows] of group(rows, r => k(r.ulb))) {

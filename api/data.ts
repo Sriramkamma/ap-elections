@@ -30,7 +30,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const reports = TABS.map(tab => {
       const snapshot = tab.snapshot ?? tab.tab
       const rows = bySnapshot[snapshot] ?? []
-      const ulbs = rows.filter(r => r.level === 'ulb_summary')
+      const ulbs = rows.filter(r => r.level === 'ulb_summary' && !r.isGrandTotal)
       const reportIssues = issues.filter(issue => issue.tab === tab.tab || issue.tab === snapshot)
       const available = !src.missingTabs.includes(tab.tab) && ulbs.length > 0
       const acceptedPartial5pm = snapshot === '5 PM' && ulbs.length > 0 && ulbs.length < EXPECTED_ULB_COUNT
