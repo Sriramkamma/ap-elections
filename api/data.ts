@@ -33,8 +33,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const ulbs = rows.filter(r => r.level === 'ulb_summary' && !r.isGrandTotal)
       const reportIssues = issues.filter(issue => issue.tab === tab.tab || issue.tab === snapshot)
       const available = !src.missingTabs.includes(tab.tab) && ulbs.length > 0
-      const acceptedPartial5pm = snapshot === '5 PM' && ulbs.length > 0 && ulbs.length < EXPECTED_ULB_COUNT
-      const valid = available && (ulbs.length === EXPECTED_ULB_COUNT || acceptedPartial5pm) && !reportIssues.some(issue => issue.severity === 'error')
+      const acceptedPartialLatest = snapshot === '10 PM' && ulbs.length > 0 && ulbs.length < EXPECTED_ULB_COUNT
+      const valid = available && (ulbs.length === EXPECTED_ULB_COUNT || acceptedPartialLatest) && !reportIssues.some(issue => issue.severity === 'error')
       const agg = aggregate(recs, snapshot, [])
       return { snapshot, available, reason: src.missingTabs.includes(tab.tab) ? 'Worksheet tab not found in the spreadsheet.' : !ulbs.length ? 'Worksheet has no ULB records.' : undefined, valid, recordCount: ulbs.length, totalWards: ulbs.every(r => r.wardCount != null) ? ulbs.reduce((sum, row) => sum + (row.wardCount ?? 0), 0) : null, state: agg.state, districts: agg.districts, ulbs: agg.ulbs, issues: reportIssues }
     })

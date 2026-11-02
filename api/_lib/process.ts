@@ -120,7 +120,7 @@ export function validate(recs: Rec[], issues: Issue[]): Rec[] {
 
 export function validateReportingTabs(bySnapshot: Record<string, Rec[]>, issues: Issue[]) {
   const recordsOf = (rows: Rec[]) => rows.filter(r => r.level === 'ulb_summary' && !r.isGrandTotal)
-  const reportingTimes = ['11 AM', '1 PM', '3 PM', '5 PM']
+  const reportingTimes = ['11 AM', '1 PM', '3 PM', '5 PM', '10 PM']
   const reference = new Set(recordsOf(bySnapshot[reportingTimes[0]] ?? []).map(r => norm(r.ulb)).filter(Boolean))
   for (const [snapshot, rows] of Object.entries(bySnapshot)) {
     const records = recordsOf(rows)
@@ -147,10 +147,10 @@ export function validateReportingTabs(bySnapshot: Record<string, Rec[]>, issues:
       seen.add(id)
       if (r.registered == null || r.polled == null || r.wardCount == null || r.sourcePct == null) issues.push({ severity: 'error', code: 'MISSING_REQUIRED_VALUE', tab: r.tab, row: r.row, message: `${snapshot}: ${r.ulb} is missing total voters, votes polled, ward count, or source polling percentage` })
     }
-    if (records.length !== EXPECTED_ULB_COUNT) issues.push({ severity: snapshot === '5 PM' && records.length < EXPECTED_ULB_COUNT ? 'warn' : 'error', code: 'ULB_COUNT', tab: snapshot, message: `${snapshot}: expected ${EXPECTED_ULB_COUNT} ULB records; found ${records.length}` })
+    if (records.length !== EXPECTED_ULB_COUNT) issues.push({ severity: snapshot === '10 PM' && records.length < EXPECTED_ULB_COUNT ? 'warn' : 'error', code: 'ULB_COUNT', tab: snapshot, message: `${snapshot}: expected ${EXPECTED_ULB_COUNT} ULB records; found ${records.length}` })
     if (snapshot !== '11 AM' && reference.size) {
       const current = new Set(records.map(r => norm(r.ulb)).filter(Boolean))
-      for (const id of reference) if (!current.has(id)) issues.push({ severity: snapshot === '5 PM' ? 'warn' : 'error', code: 'MISSING_ULB', tab: snapshot, message: `${snapshot}: ULB "${id}" is missing` })
+      for (const id of reference) if (!current.has(id)) issues.push({ severity: snapshot === '10 PM' ? 'warn' : 'error', code: 'MISSING_ULB', tab: snapshot, message: `${snapshot}: ULB "${id}" is missing` })
       for (const id of current) if (!reference.has(id)) issues.push({ severity: 'error', code: 'UNEXPECTED_ULB', tab: snapshot, message: `${snapshot}: ULB "${id}" was not present at 11 AM` })
     }
   }
